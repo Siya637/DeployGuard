@@ -146,17 +146,16 @@ def ast_parser(source_code: str, filename: str = "<string>") -> dict:
 
 
 def save_ast_json(parsed: dict, build_dir: str = "build") -> str:
-    """
-    Save a single file's parsed AST dict (output of ast_parser) as a JSON
-    file inside build_dir. One JSON file per source file.
-
-    Returns the path the file was written to.
-    """
     os.makedirs(build_dir, exist_ok=True)
 
-    # turn the original filename into a safe, flat filename for the json,
-    # e.g. "src/utils/io.py" -> "src__utils__io.py.json"
-    safe_name = parsed["filename"].replace("/", "__").replace("\\", "__")
+    raw_name = parsed["filename"]
+
+    # strip any drive letter (e.g. "C:") and leading slashes so only a
+    # relative, flattenable path remains
+    raw_name = os.path.splitdrive(raw_name)[1]
+    raw_name = raw_name.lstrip("\\/")
+
+    safe_name = raw_name.replace("/", "__").replace("\\", "__")
     out_path = os.path.join(build_dir, f"{safe_name}.json")
 
     with open(out_path, "w") as f:
