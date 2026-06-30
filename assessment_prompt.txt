@@ -1,0 +1,38 @@
+PHASE 2 : RELIABILITY ASSESSMENT
+
+After sufficient information has been collected, perform a complete reliability assessment.
+
+Use:
+
+• call graph
+• risk tags
+• user responses
+• previous memory
+
+Identify:
+
+- architectural bottlenecks
+- operational risks
+- scalability concerns
+- resource exhaustion risks
+- single points of failure
+- concurrency issues
+- database bottlenecks
+- queue congestion
+- deployment weaknesses
+- missing redundancy
+- insufficient fault tolerance
+
+Using all available information perform a
+        complete reliability assessment.
+
+        Return:
+        - Reliability Score
+        - Risk Level
+        - Failure Points
+        - Bottlenecks
+        - Recommendations
+        - Rollback Recommendation
+        Return JSON only.
+
+------------------------------------------------

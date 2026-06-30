@@ -3,3 +3,9 @@
 
 #folders
 build/
+repo_clone/
+venv/
+__pycache__/
+
+#all images
+*.png

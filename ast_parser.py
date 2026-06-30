@@ -89,26 +89,46 @@ class CodeVisitor(ast.NodeVisitor):
             "args": [a.arg for a in node.args.args],
             "calls": [],
             "risk_tags": set(),
+            "has_loop": False,
         }
 
-        # walk only within this function's body for calls
-        for child in ast.walk(node):
-            if isinstance(child, ast.Call):
-                call_name = _get_call_name(child)
+        def walk(n, in_loop, in_try):
+            if isinstance(n, (ast.For, ast.While, ast.AsyncFor)):
+                in_loop = True
+                func_record["has_loop"] = True
+            if isinstance(n, ast.Try):
+                in_try = True
+
+            if isinstance(n, ast.Call):
+                call_name = _get_call_name(n)
                 tags = _classify_risk(call_name)
                 func_record["calls"].append({
                     "name": call_name,
-                    "line": child.lineno,
+                    "line": n.lineno,
                     "risk_tags": tags,
+                    "in_loop": in_loop,
+                    "in_try_except": in_try,
                 })
                 func_record["risk_tags"].update(tags)
 
+            for child in ast.iter_child_nodes(n):
+                # don't descend into nested function defs - they get
+                # visited separately when the visitor reaches them
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                walk(child, in_loop, in_try)
+
+        for child in ast.iter_child_nodes(node):
+            walk(child, False, False)
+
+        # function-level summary flags, derived from the per-call detail above
+        func_record["calls_made_inside_loop"] = any(c["in_loop"] for c in func_record["calls"])
+        func_record["has_unprotected_risky_call"] = any(
+            c["risk_tags"] and not c["in_try_except"] for c in func_record["calls"]
+        )
+
         func_record["risk_tags"] = sorted(func_record["risk_tags"])
         self.functions.append(func_record)
-
-        # don't generic_visit into nested functions twice -
-        # ast.walk above already captured calls within this function,
-        # so we skip descending further here.
 
 
 def ast_parser(source_code: str, filename: str = "<string>") -> dict:
@@ -146,17 +166,16 @@ def ast_parser(source_code: str, filename: str = "<string>") -> dict:
 
 
 def save_ast_json(parsed: dict, build_dir: str = "build") -> str:
-    """
-    Save a single file's parsed AST dict (output of ast_parser) as a JSON
-    file inside build_dir. One JSON file per source file.
-
-    Returns the path the file was written to.
-    """
     os.makedirs(build_dir, exist_ok=True)
 
-    # turn the original filename into a safe, flat filename for the json,
-    # e.g. "src/utils/io.py" -> "src__utils__io.py.json"
-    safe_name = parsed["filename"].replace("/", "__").replace("\\", "__")
+    raw_name = parsed["filename"]
+
+    # strip any drive letter (e.g. "C:") and leading slashes so only a
+    # relative, flattenable path remains
+    raw_name = os.path.splitdrive(raw_name)[1]
+    raw_name = raw_name.lstrip("\\/")
+
+    safe_name = raw_name.replace("/", "__").replace("\\", "__")
     out_path = os.path.join(build_dir, f"{safe_name}.json")
 
     with open(out_path, "w") as f:
@@ -267,6 +286,24 @@ def build_call_graph(build_dir: str = "build") -> dict:
                         "line": call["line"],
                         "risk_tags": call["risk_tags"],
                     })
+    # third pass: compute fan-in / fan-out per node now that all edges are known
+    fan_in = {}
+    fan_out = {}
+    for edge in graph["edges"]:
+        fan_out[edge["caller"]] = fan_out.get(edge["caller"], 0) + 1
+        fan_in[edge["callee"]] = fan_in.get(edge["callee"], 0) + 1
+
+    for node in graph["nodes"]:
+        node["fan_in"] = fan_in.get(node["id"], 0)
+        node["fan_out"] = fan_out.get(node["id"], 0)
+    
+    # Save the merged call graph
+    output_path = os.path.join(build_dir, "call_graph.json")
+    try:
+        with open(output_path, "w") as f:
+            json.dump(graph, f, indent=4)
+    except OSError as e:
+        graph["errors"].append(f"Failed to write {output_path}: {e}")
 
     return graph
 

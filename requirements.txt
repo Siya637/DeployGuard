@@ -1,0 +1,8 @@
+groq>=0.30.0
+langgraph
+langchain-core
+GitPython
+PyYAML
+ipython
+python-dotenv
+langchain-groq
