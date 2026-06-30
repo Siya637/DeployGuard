@@ -1,0 +1,5 @@
+#imp keys
+.env
+
+#folders
+build/
