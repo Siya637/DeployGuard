@@ -4,5 +4,8 @@ langchain-core
 GitPython
 PyYAML
 ipython
+<<<<<<< HEAD
 python-dotenv
 langchain-groq
+=======
+>>>>>>> 02d29d74d48571abb671c354c79a97f952fa0df3
