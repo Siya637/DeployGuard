@@ -31,6 +31,7 @@ class ReliabilityState(TypedDict):
     call_graph: dict 
     raw_function_data: List[Dict]
     risk_factor: dict
+    assessment: dict
     failure_points :dict
     reliability_score: int
     risk_level: str
@@ -255,164 +256,188 @@ def architecture_extractor(state: ReliabilityState) -> ReliabilityState:
 
 def simulation_engine(state: ReliabilityState) -> ReliabilityState:
 
-    failure_points = state["failure_points"]
+    failure_points    = state["failure_points"]
     reliability_score = state["reliability_score"]
-    risk_level = state["risk_level"]
 
-    ##################################################
-
-    severity_weights = {
-        "LOW":5,
-        "MEDIUM":10,
-        "HIGH":20,
-        "CRITICAL":30
+    # ------------------------------------------------------------------
+    # How much reliability degrades when a failure point is active.
+    # These are base impact points subtracted from reliability_score.
+    # ------------------------------------------------------------------
+    SEVERITY_IMPACT = {
+        "LOW":      3,
+        "MEDIUM":   8,
+        "HIGH":     15,
+        "CRITICAL": 25
     }
 
-    ##################################################
-
-    probability_weights = {
-        "LOW":0.3,
-        "MEDIUM":0.6,
-        "HIGH":0.9
+    # ------------------------------------------------------------------
+    # Probability that a failure manifests once the component is
+    # under sufficient load.
+    # ------------------------------------------------------------------
+    PROBABILITY_WEIGHT = {
+        "LOW":    0.2,
+        "MEDIUM": 0.5,
+        "HIGH":   0.85
     }
 
-    ##################################################
-    
-    total_risk = 0
-    simulated_failures = []
+    # ------------------------------------------------------------------
+    # Minimum load multiplier (relative to baseline traffic) at which
+    # each severity level activates.
+    #
+    # CRITICAL issues exist even at nominal load (1x).
+    # LOW severity issues only surface under heavy saturation (8x).
+    # ------------------------------------------------------------------
+    ACTIVATION_LOAD = {
+        "CRITICAL": 1.0,
+        "HIGH":     1.5,
+        "MEDIUM":   3.0,
+        "LOW":      8.0
+    }
 
-    ##################################################
+    # ------------------------------------------------------------------
+    # The three workload scenarios we simulate.
+    # Each is defined by a load multiplier vs. baseline.
+    # ------------------------------------------------------------------
+    WORKLOAD_SCENARIOS = {
+        "best_case":    1.0,   # nominal / quiet period traffic
+        "average_case": 3.0,   # moderate load spike
+        "worst_case":   8.0    # peak load / saturation event
+    }
 
-    for fp in failure_points:
+    # ------------------------------------------------------------------
+    # Run the simulation for each scenario.
+    # ------------------------------------------------------------------
+    scenario_analysis = {}
 
-        severity = fp.get(
-            "severity",
-            "LOW"
+    for scenario_name, load_multiplier in WORKLOAD_SCENARIOS.items():
+
+        active_failures = []
+        total_impact    = 0.0
+
+        for fp in failure_points:
+
+            severity    = fp.get("severity",    "LOW")
+            probability = fp.get("probability", "LOW")
+            component   = fp.get("component",   "unknown")
+            reason      = fp.get("reason",      fp.get("issue", ""))
+
+            # Skip if this load level doesn't yet trigger this failure point
+            if load_multiplier < ACTIVATION_LOAD[severity]:
+                continue
+
+            # Load amplification: the further load exceeds the activation
+            # threshold, the harder the failure hits — capped at 3x.
+            load_amplification = min(
+                load_multiplier / ACTIVATION_LOAD[severity],
+                3.0
+            )
+
+            impact = (
+                SEVERITY_IMPACT[severity]
+                * PROBABILITY_WEIGHT[probability]
+                * load_amplification
+            )
+
+            total_impact += impact
+
+            active_failures.append({
+                "component":                component,
+                "reason":                   reason,
+                "severity":                 severity,
+                "probability":              probability,
+                "impact_score":             round(impact, 2),
+                "activates_at_load":        f"{ACTIVATION_LOAD[severity]}x"
+            })
+
+        # Sort by impact descending — highest risk components surface first
+        active_failures.sort(key=lambda x: x["impact_score"], reverse=True)
+
+        predicted_reliability = max(
+            round(reliability_score - total_impact, 1),
+            0
         )
-        
-        probability = fp.get(
-            "probability",
-            "LOW"
-        )
-        
-        component = fp.get(
-            "component",
-            "unknown"
-        )
 
-        issue = fp.get(
-            "issue",
-            ""
-        )
+        if predicted_reliability >= 85:
+            expected_status = "Stable"
+        elif predicted_reliability >= 70:
+            expected_status = "Degraded Performance"
+        elif predicted_reliability >= 50:
+            expected_status = "Partial Outage Risk"
+        else:
+            expected_status = "High Outage Risk"
 
-        ##################################################
-
-        score = (
-            severity_weights[severity]
-            *
-            probability_weights[probability]
-        )
-
-        total_risk += score
-
-        ##################################################
-
-        simulated_failures.append({
-            "component":
-                component,
-            "issue":
-                issue,
-            "risk_score":
-                round(score,2),
-            "severity":
-                severity,
-            "probability":
-                probability
-        })
-
-    ##################################################
-
-    best_case = max(
-        reliability_score,
-        90
-    )
-
-    average_case = reliability_score
-    worst_case = max(
-        reliability_score
-        -
-        int(total_risk),
-        0
-    )
-
-    ##################################################
-
-    scenarios = {
-        "best_case":{
-            "reliability":
-                best_case,
-            "expected_status":
-                "Stable"
-        },
-
-        "average_case":{
-            "reliability":
-                average_case,
-            "expected_status":
-                "Moderate Risk"
-        },
-
-        "worst_case":{
-            "reliability":
-                worst_case,
-            "expected_status":
-                "Potential Outage"
+        scenario_analysis[scenario_name] = {
+            "load_multiplier":       f"{load_multiplier}x baseline",
+            "active_failure_count":  len(active_failures),
+            "active_failures":       active_failures,
+            "total_impact":          round(total_impact, 2),
+            "predicted_reliability": predicted_reliability,
+            "expected_status":       expected_status
         }
-    }
 
-    ##################################################
+    # ------------------------------------------------------------------
+    # Rollback is driven by worst-case predicted reliability,
+    # defaulting to True (fail-safe) if the key is missing.
+    # ------------------------------------------------------------------
+    worst_reliability = scenario_analysis["worst_case"]["predicted_reliability"]
+    rollback = worst_reliability < 60
 
     simulation_results = {
-        "aggregated_risk":
-            round(total_risk,2),
-        "simulated_failures":
-            simulated_failures,
-        "scenario_analysis":
-            scenarios
+        "baseline_reliability": reliability_score,
+        "scenario_analysis":    scenario_analysis
     }
 
-    ##################################################
+    state["simulation_results"]    = simulation_results
+    state["rollback_recommended"]  = rollback
 
-    rollback = False
-    if worst_case < 60:
-        rollback = True
-
-    ##################################################
-
-    state["simulation_results"] = simulation_results
-    state["rollback_recommended"] = rollback
+    # print(json.dumps(simulation_results, indent=2))
+    # print("Rollback recommended:", rollback)
 
     return state
 
 def report_generator(state: ReliabilityState) -> ReliabilityState:
     llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
-    temperature=0
+        api_key=GROQ_API_KEY,
+        model="llama-3.3-70b-versatile",
+        temperature=0,
+        max_retries=6
     )
 
-    prompt = f"""
-    Architecture
-    {state['architecture']}
-    Simulation
-    {state['simulation_results']}
-    Risk
-    {state['risk_score']}
-    Recommendations
-    {state['recommendations']}
-    Generate reliability report.
+    with open("closure_prompt.txt", "r", encoding="utf-8") as f:
+        closure_prompt = f.read()
+
+    close_prompt = f"""
+    
+        schema: {closure_prompt}
+
+        input:
+        assessment:
+        {state["assessment"]}
+
+        RISK_FACTORS:
+        {state["risk_factor"]}
+
+        FAILURE_POINTS:
+        {state["failure_points"]}
+
+        ROLLBACK:
+        {state["rollback_recommended"]}
+
+        RELIABILITY SCORE:
+        {state["reliability_score"]}
+
+        RISK FACTORS:
+        {state["risk_factor"]}
+
+        Simulation Results:
+        {state["simulation_results"]}
+
+
     """
 
-    response = llm.invoke(prompt)
+    closure_response = llm.invoke([HumanMessage(content=close_prompt)])
+
+    print(closure_response.content)
 
     return state
 
