@@ -217,7 +217,10 @@ def build_call_graph(build_dir: str = "build") -> dict:
         "errors": [],
     }
 
-    json_paths = glob.glob(os.path.join(build_dir, "*.json"))
+    json_paths = [
+    p for p in glob.glob(os.path.join(build_dir, "*.json"))
+    if os.path.basename(p) not in ("call_graph.json", "risk_factors.json", "llm_response.json")
+]
 
     # first pass: collect every function as a node, and build a lookup
     # from simple function name -> list of qualified ids (a name can

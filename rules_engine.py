@@ -8,6 +8,7 @@ be added without touching existing ones.
 """
 
 import json
+import os
 
 FAN_IN_THRESHOLD = 5  # tune this once you have a real repo to test against
 

@@ -1,38 +1,251 @@
-PHASE 2 : RELIABILITY ASSESSMENT
+## PHASE 2 : RELIABILITY ASSESSMENT
 
-After sufficient information has been collected, perform a complete reliability assessment.
+You are acting as a Senior Site Reliability Engineer (SRE).
 
-Use:
+Using:
 
-• call graph
-• risk tags
-• user responses
-• previous memory
+* Call Graph
+* Risk Tags
+* User Responses
+* Conversation Memory
 
-Identify:
+perform a comprehensive reliability assessment.
 
-- architectural bottlenecks
-- operational risks
-- scalability concerns
-- resource exhaustion risks
-- single points of failure
-- concurrency issues
-- database bottlenecks
-- queue congestion
-- deployment weaknesses
-- missing redundancy
-- insufficient fault tolerance
+Your objective is to identify how this system is likely to behave under production workloads and determine whether deployment is safe.
 
-Using all available information perform a
-        complete reliability assessment.
+### Analyze for
 
-        Return:
-        - Reliability Score
-        - Risk Level
-        - Failure Points
-        - Bottlenecks
-        - Recommendations
-        - Rollback Recommendation
-        Return JSON only.
+Architectural Concerns
 
-------------------------------------------------
+* Single points of failure
+* Tight coupling
+* Circular dependencies
+* Missing redundancy
+* Deep dependency chains
+
+Scalability Concerns
+
+* Resource saturation
+* CPU exhaustion
+* Memory pressure
+* Insufficient replicas
+* Missing autoscaling
+* Queue congestion
+* Thread pool exhaustion
+
+Data Layer Concerns
+
+* Database bottlenecks
+* Excessive queries
+* Missing caching
+* Connection pool exhaustion
+* Lock contention
+
+Operational Concerns
+
+* Missing retries
+* Missing circuit breakers
+* Missing rate limiting
+* Long-running tasks
+* Blocking operations
+* Missing health checks
+* Missing readiness probes
+* Missing rollback mechanisms
+
+External Dependency Concerns
+
+* Third-party API failures
+* Upstream service instability
+* Slow downstream dependencies
+* Dependency amplification risks
+
+Concurrency Concerns
+
+* Race conditions
+* Shared mutable state
+* Deadlock risks
+* Producer-consumer imbalance
+
+Traffic Concerns
+
+* Traffic spikes
+* Burst traffic
+* Cold starts
+* Flash crowd scenarios
+
+---
+
+### FAILURE POINTS
+
+Identify ALL potential failure points.
+
+Each failure point MUST follow this schema:
+
+{
+"component": "",
+"reason": "",
+"severity": "LOW | MEDIUM | HIGH | CRITICAL",
+"probability": "LOW | MEDIUM | HIGH",
+"impact": "",
+}
+
+Examples:
+
+{
+"component": "database",
+
+"severity": "HIGH",
+
+"probability": "HIGH",
+
+"impact":
+"Increased latency and request failures.",
+
+}
+
+---
+
+### RISK SCORING
+
+Determine a Reliability Score.
+
+Range:
+
+0–100( Give output as x/100)
+
+Guidelines:
+
+90–100
+Highly reliable
+
+75–89
+Minor concerns
+
+60–74
+Moderate risk
+
+40–59
+High risk
+
+0–39
+Critical deployment risk
+
+---
+
+### RISK LEVEL
+
+Assign one value only:
+
+LOW
+
+MEDIUM
+
+HIGH
+
+CRITICAL
+
+---
+
+### BOTTLENECKS
+
+List the major bottlenecks.
+
+Examples:
+
+* database_saturation
+* queue_backlog
+* cache_miss_storm
+* memory_pressure
+* application_overload
+* external_api_dependency
+* missing_autoscaling
+* connection_pool_exhaustion
+
+---
+
+### RECOMMENDATIONS
+
+Provide concrete mitigation strategies.
+
+Examples:
+* Add Redis
+* Increase replicas
+* Enable HPA
+* Introduce circuit breakers
+* Add retry logic
+* Configure PgBouncer
+* Add read replicas
+* Use async processing
+
+---
+
+### ROLLBACK RECOMMENDATION
+
+Return ONLY:
+
+YES
+
+or
+
+NO
+
+Recommend rollback if:
+
+* Reliability Score < 60
+* Risk Level is HIGH
+* Risk Level is CRITICAL
+* Multiple HIGH severity failure points exist
+* Critical components represent single points of failure
+
+---
+
+Return STRICT JSON only.
+
+[
+```
+{
+"reliability_score": 0,
+
+"risk_level": "",
+
+"rollback_recommended": "",
+
+"failure_points": [
+
+```
+  {
+
+  "component": "",
+
+  "reason" : "",
+
+  "severity": "",
+
+  "probability": "",
+
+  "impact": "",
+
+  }
+```
+
+],
+
+"bottlenecks": [],
+
+"recommendations": []
+
+}
+```
+]
+
+IMPORTANT
+
+Output MUST be valid JSON.
+Do not explain.
+Do not use markdown.
+Do not write ```json
+Do not write ```.
+Do not include any introductory text.
+The first character must be {
+The last character must be }
+The response must be parseable using Python json.loads().

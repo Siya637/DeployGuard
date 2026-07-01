@@ -1,128 +1,53 @@
 from ast_parser import ast_parser, build_call_graph
+from rules_engine import run_rules
 
 from typing import TypedDict,Annotated,List,Union,Dict
 from langgraph.graph import StateGraph,START,END
 from langchain_core.messages import BaseMessage,HumanMessage,AIMessage,SystemMessage
 from langgraph.graph.message import add_messages
-<<<<<<< HEAD
 from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage
-=======
-from groq import Groq
->>>>>>> 02d29d74d48571abb671c354c79a97f952fa0df3
 from IPython.display import display,Image
 
 import os
 import ast
 import json
 import yaml
+import glob
+import re
+from json_repair import repair_json
 
 import git
 from git import Repo
 
-<<<<<<< HEAD
 from dotenv import load_dotenv
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("API_KEY")
 
-=======
->>>>>>> 02d29d74d48571abb671c354c79a97f952fa0df3
 class ReliabilityState(TypedDict):
 
     repo_path: str
     call_graph: dict 
+    raw_function_data: List[Dict]
     risk_factor: dict
+    failure_points :dict
+    reliability_score: int
+    risk_level: str
+    deployment_context: List
     architecture: Dict
-    deployment_inputs: Dict
-    scenarios: List
     simulation_results: Dict
+    rollback_recommended: bool
     risk_score: float
-    bottlenecks: List[str]
-    # detected_stack:Dict
-    rollback_needed: bool
     report: str
+    
 
     # this is basic boilerplate copde
-def print_call_tree(call_graph: dict):
-    nodes_by_file = {}
-    for node in call_graph["nodes"]:
-        nodes_by_file.setdefault(node["file"], []).append(node)
-<<<<<<< HEAD
-=======
-
-    edges_by_caller = {}
-    for edge in call_graph["edges"]:
-        edges_by_caller.setdefault(edge["caller"], []).append(edge)
-
-    unresolved_by_caller = {}
-    for call in call_graph["unresolved_calls"]:
-        unresolved_by_caller.setdefault(call["caller"], []).append(call)
-
-    for file, funcs in nodes_by_file.items():
-        print(f"📄 {file}")
-        for func in funcs:
-            risk = f" [{', '.join(func['risk_tags'])}]" if func["risk_tags"] else ""
-            print(f"  └── {func['name']}({', '.join(func['args'])}){risk}  (L{func['line_start']}-{func['line_end']})")
-
-            func_id = func["id"]
-            resolved = edges_by_caller.get(func_id, [])
-            unresolved = unresolved_by_caller.get(func_id, [])
-
-            for edge in resolved:
-                callee_name = edge["callee"].split("::")[-1]
-                risk = f" [{', '.join(edge['risk_tags'])}]" if edge["risk_tags"] else ""
-                print(f"        ├─→ {callee_name}() (internal){risk}  L{edge['line']}")
-
-            for call in unresolved:
-                risk = f" [{', '.join(call['risk_tags'])}]" if call["risk_tags"] else ""
-                print(f"        ├─→ {call['call_name']}() (external){risk}  L{call['line']}")
-        print()
-
-    if call_graph["errors"]:
-        print("⚠️  Errors:")
-        for err in call_graph["errors"]:
-            print(f"  - {err}")
->>>>>>> 02d29d74d48571abb671c354c79a97f952fa0df3
-
-    edges_by_caller = {}
-    for edge in call_graph["edges"]:
-        edges_by_caller.setdefault(edge["caller"], []).append(edge)
-
-    unresolved_by_caller = {}
-    for call in call_graph["unresolved_calls"]:
-        unresolved_by_caller.setdefault(call["caller"], []).append(call)
-
-    for file, funcs in nodes_by_file.items():
-        print(f"📄 {file}")
-        for func in funcs:
-            risk = f" [{', '.join(func['risk_tags'])}]" if func["risk_tags"] else ""
-            print(f"  └── {func['name']}({', '.join(func['args'])}){risk}  (L{func['line_start']}-{func['line_end']})")
-
-            func_id = func["id"]
-            resolved = edges_by_caller.get(func_id, [])
-            unresolved = unresolved_by_caller.get(func_id, [])
-
-            for edge in resolved:
-                callee_name = edge["callee"].split("::")[-1]
-                risk = f" [{', '.join(edge['risk_tags'])}]" if edge["risk_tags"] else ""
-                print(f"        ├─→ {callee_name}() (internal){risk}  L{edge['line']}")
-
-            for call in unresolved:
-                risk = f" [{', '.join(call['risk_tags'])}]" if call["risk_tags"] else ""
-                print(f"        ├─→ {call['call_name']}() (external){risk}  L{call['line']}")
-        print()
-
-    if call_graph["errors"]:
-        print("⚠️  Errors:")
-        for err in call_graph["errors"]:
-            print(f"  - {err}")
 
 def generate_call_graph(state: ReliabilityState)->ReliabilityState:
+    state["raw_function_data"] = []
     repo = state["repo_path"]
     clone_path = os.path.expanduser("~/repo_clone")
-<<<<<<< HEAD
-=======
 
     #clone repo
     if not os.path.exists(clone_path):
@@ -147,48 +72,23 @@ def generate_call_graph(state: ReliabilityState)->ReliabilityState:
         try:
             rel_filename = os.path.relpath(filename, start=clone_path)
             result = ast_parser(source_code, rel_filename)
+            state["raw_function_data"].append(result)
 
         except SyntaxError as e:
             print(f"Skipping {filename} due to syntax error: {e}")
             continue
+   
     
+    #build call graph.json & store into cal_graph state variable
     state["call_graph"] = build_call_graph("build")
-    print_call_tree(state["call_graph"])
->>>>>>> 02d29d74d48571abb671c354c79a97f952fa0df3
 
-    #clone repo
-    if not os.path.exists(clone_path):
-        git.Repo.clone_from(repo, clone_path)
-    else:
-        print("Repo already exists locally, skipping clone.")
-
-<<<<<<< HEAD
-    #storing only python files
-    python_files = []
-    for root, dirs, files in os.walk(clone_path):
-        # skip common noise folders
-        dirs[:] = [d for d in dirs if d not in (".git", "venv", "__pycache__", "node_modules")]
-        for file in files:
-            if file.endswith(".py"):
-                python_files.append(os.path.join(root, file))
-=======
-    files = os.listdir(clone_path)
->>>>>>> 02d29d74d48571abb671c354c79a97f952fa0df3
-
-    #for every file, we extract the source code as a form of string and call ast_parser
-    for filename in python_files:
-        with open(filename, "r", encoding="utf-8") as f:
-            source_code = f.read()
-
-        try:
-            rel_filename = os.path.relpath(filename, start=clone_path)
-            result = ast_parser(source_code, rel_filename)
-
-        except SyntaxError as e:
-            print(f"Skipping {filename} due to syntax error: {e}")
-            continue
+    #build risk_factors.json & store into risk_factor state variable
     
-    build_call_graph("build")
+    risk_flags = run_rules(state["call_graph"], state["raw_function_data"])
+    os.makedirs("build", exist_ok=True)
+    with open("build/risk_factors.json", "w") as f:
+        json.dump(risk_flags, f, indent=2)
+    state["risk_factor"] = risk_flags
 
     # stack = {}
 
@@ -214,39 +114,30 @@ def generate_call_graph(state: ReliabilityState)->ReliabilityState:
     # }
     return state
 
-def format_for_llm(call_graph: dict, risk_factors: list) -> str:
-    """
-    Condense the artifacts into a prompt-friendly string.
-    You do NOT dump the entire call graph raw - that would flood the context.
-    Instead, summarise the structure and let risk_factors carry the detail.
-    """
-    node_summary = [
-        f"- {n['id']} (fan_in={n['fan_in']}, fan_out={n['fan_out']}, risk_tags={n['risk_tags']})"
-        for n in call_graph["nodes"]
-    ]
 
-    risk_summary = [
-        f"- [{r['sre_category'].upper()}] {r['function']} in {r['file']}: "
-        f"{r['rule_triggered']} | {r['evidence']} | fan_in={r['fan_in']}"
-        for r in risk_factors
-    ]
+def extract_json(text: str) -> dict:
+    text = text.strip()
+    if not text:
+        raise ValueError("LLM returned empty content")
 
-    return f"""
-        ## Codebase Structure (Call Graph Summary)
-        Total functions: {len(call_graph['nodes'])}
-        Total internal edges: {len(call_graph['edges'])}
-        Total unresolved external calls: {len(call_graph['unresolved_calls'])}
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        raise ValueError(f"No JSON object found in LLM output: {text[:200]!r}")
 
-        Functions:
-        {chr(10).join(node_summary)}
+    raw = match.group(0)
 
-        ## Pre-Detected Risk Flags (from static rules engine)
-        {chr(10).join(risk_summary) if risk_summary else "No rule-based risk flags detected."}
-        """
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        try:
+            return json.loads(repair_json(raw))
+        except Exception as e:
+            raise ValueError(
+                f"Failed to parse or repair JSON from LLM output: {raw[:200]!r}"
+            ) from e
 
-def architecture_extractor(state: ReliabilityState)->ReliabilityState:
 
-    # stack = state["detected_stack"]
+def inter_llm_response(state: ReliabilityState)->ReliabilityState:
 
     llm = ChatGroq(
         api_key=GROQ_API_KEY,
@@ -260,12 +151,6 @@ def architecture_extractor(state: ReliabilityState)->ReliabilityState:
     with open("assessment_prompt.txt", "r", encoding="utf-8") as f:
         assessment_prompt = f.read()
 
-    with open("call_graph.json", "r") as f:
-        state["call_graph"] = f.read()
-    
-    with open("risk_factors.json", "r") as f:
-        state["risk_factor"] = f.read()
-
 
     question_prompt = f"""
         {questions_prompt}
@@ -276,7 +161,7 @@ def architecture_extractor(state: ReliabilityState)->ReliabilityState:
 
     """
     question_response = llm.invoke([HumanMessage(content=question_prompt)])
-    questions_json = json.loads(question_response.content)
+    questions_json = extract_json(question_response.content)
     questions = questions_json["questions"]
 
     print("\nQuestions:\n")
@@ -285,17 +170,17 @@ def architecture_extractor(state: ReliabilityState)->ReliabilityState:
         print(f"{i}. {q}")
 
     print("\nProvide answers in the same order.")
-    print("Write answers on new line.\n")
+    print("Write answers by separating them with a comma.\n")
 
     raw_answers = input("> ")
 
-    answers = [a.strip() for a in raw_answers.split("\n")]
+    answers = [a.strip() for a in raw_answers.split(",")]
 
-    deployment_context = []
+    state["deployment_context"] = []
 
     for q, a in zip(questions, answers):
 
-        deployment_context.append({
+        state["deployment_context"].append({
 
             "question": q,
 
@@ -311,224 +196,206 @@ def architecture_extractor(state: ReliabilityState)->ReliabilityState:
         {state["risk_factor"]}
 
         Deployment Information
-        {json.dumps(deployment_context, indent=2)}
+        {json.dumps(state["deployment_context"], indent=2)}
 
-    """
-
-
-    # context = format_for_llm(state["call_graph"], state["risk_factor"])
-    
-    # prompt = f"""
-    #     You are a senior SRE reviewing a Python codebase for operational reliability risks before deployment.
-
-    #     Below is a structural analysis of the codebase and pre-detected risk flags from a static rules engine.
-    #     Your job is to:
-    #     1. Review the flagged risks and reason about their likely impact under production load.
-    #     2. Identify any additional reliability concerns not caught by the rules.
-    #     3. Ask the user 3-5 targeted deployment-specific questions to fill gaps you cannot infer from code alone.
-    #     (e.g. expected traffic volume, DB connection pool size, whether retries are configured upstream)
-
-    #     {context}
-
-    #     Now list your questions for the user.
-    # """ 
+    """ 
 
     response = llm.invoke([HumanMessage(content=assessment_prompt)])
-    print(response.content)
-    
+    assessment_json = extract_json(response.content)  # now with repair_json fallback
+
+    if assessment_json is None:
+        print("inter_llm_response: failed to parse LLM output")
+        print(repr(response.content))
+        assessment_json = {}
+
+    state["failure_points"] = assessment_json.get("failure_points", [])   # fixed: underscore
+    state["reliability_score"] = assessment_json.get("reliability_score", 0)
+    state["risk_level"] = assessment_json.get("risk_level", "UNKNOWN")
+    state["assessment"] = assessment_json
+
+    out_path = os.path.join("build", "llm_response.json")
+    with open(out_path, "w") as f:
+        json.dump(assessment_json, f, indent=2)
+
     return state
 
-def deployment_questions(state: ReliabilityState) -> ReliabilityState:
-    deployment = {
+def architecture_extractor(state: ReliabilityState) -> ReliabilityState:
+    llm = ChatGroq(
+        api_key=GROQ_API_KEY,
+        model="llama-3.3-70b-versatile",
+        temperature=0,
+    )
+    
+    with open("architecture_prompt.txt", "r", encoding="utf-8") as f:
+        architecture_prompt = f.read()
 
-        "peak_rps":5000,
 
-        "replicas":2,
+    architect_prompt=f"""
 
-        "autoscaling":False,
+        schema: {architecture_prompt}
 
-        "cache":False,
+        USER:
+        CALL_GRAPH:
+        {state["call_graph"]}
 
-        "db_connections":100
+        RISK_FACTORS:
+        {state["risk_factor"]}
 
+        FAILURE_POINTS:
+        {state["failure_points"]}
+
+        DEPLOYMENT_CONTEXT (if collected):
+        {state["deployment_context"]}
+    """
+    
+    architecture_response = llm.invoke([HumanMessage(content=architect_prompt)])
+    state["architecture"] = extract_json(architecture_response.content)
+   
+    return state
+
+def simulation_engine(state: ReliabilityState) -> ReliabilityState:
+
+    failure_points = state["failure_points"]
+    reliability_score = state["reliability_score"]
+    risk_level = state["risk_level"]
+
+    ##################################################
+
+    severity_weights = {
+        "LOW":5,
+        "MEDIUM":10,
+        "HIGH":20,
+        "CRITICAL":30
     }
 
-    return {
-<<<<<<< HEAD
+    ##################################################
 
-        "deployment_inputs":deployment
-
-=======
-        "stack": stack
->>>>>>> 02d29d74d48571abb671c354c79a97f952fa0df3
+    probability_weights = {
+        "LOW":0.3,
+        "MEDIUM":0.6,
+        "HIGH":0.9
     }
 
-def simulation_engine(state):
+    ##################################################
+    
+    total_risk = 0
+    simulated_failures = []
 
-    deployment = state["deployment_inputs"]
+    ##################################################
 
-    peak = deployment["peak_rps"]
+    for fp in failure_points:
 
-    replicas = deployment["replicas"]
-
-    db_limit = deployment["db_connections"]
-
-    capacity = replicas*1000
-
-    utilization = peak/capacity
-
-    db_usage = peak*0.05
-
-    latency = 200*(utilization)
-
-    results = {
-
-        "capacity":capacity,
-
-        "utilization":utilization,
-
-        "db_usage":db_usage,
-
-        "latency":latency
-
-    }
-
-    return {
-
-        "simulation_results":results
-
-    }
-
-def risk_assessor(state):
-
-    sim = state["simulation_results"]
-
-    deploy = state["deployment_inputs"]
-
-    risk = 0
-
-    bottlenecks = []
-
-    if sim["utilization"] > 0.8:
-
-        risk += 30
-
-        bottlenecks.append(
-
-            "Application overload"
-
+        severity = fp.get(
+            "severity",
+            "LOW"
+        )
+        
+        probability = fp.get(
+            "probability",
+            "LOW"
+        )
+        
+        component = fp.get(
+            "component",
+            "unknown"
         )
 
-    if sim["db_usage"] > deploy["db_connections"]:
-
-        risk += 30
-
-        bottlenecks.append(
-
-            "Database saturation"
-
+        issue = fp.get(
+            "issue",
+            ""
         )
 
-    if deploy["autoscaling"] == False:
+        ##################################################
 
-        risk += 15
-
-        bottlenecks.append(
-
-            "No autoscaling"
-
+        score = (
+            severity_weights[severity]
+            *
+            probability_weights[probability]
         )
 
-    if deploy["cache"] == False:
+        total_risk += score
 
-        risk += 10
+        ##################################################
 
-        bottlenecks.append(
+        simulated_failures.append({
+            "component":
+                component,
+            "issue":
+                issue,
+            "risk_score":
+                round(score,2),
+            "severity":
+                severity,
+            "probability":
+                probability
+        })
 
-            "Missing cache"
+    ##################################################
 
-        )
-
-    rollback = risk > 60
-
-    return {
-
-        "risk_score":risk,
-
-        "bottlenecks":bottlenecks,
-
-        "rollback_needed":rollback
-
-    }
-
-def mitigation_agent(state):
-    llm = Groq(
-    model="llama-3.3-70b-versatile",
-    temperature=0
+    best_case = max(
+        reliability_score,
+        90
     )
 
-    prompt = f"""
+    average_case = reliability_score
+    worst_case = max(
+        reliability_score
+        -
+        int(total_risk),
+        0
+    )
 
-    Risk 
-    Score
+    ##################################################
 
-    {state['risk_score']}
+    scenarios = {
+        "best_case":{
+            "reliability":
+                best_case,
+            "expected_status":
+                "Stable"
+        },
 
-    Bottlenecks
+        "average_case":{
+            "reliability":
+                average_case,
+            "expected_status":
+                "Moderate Risk"
+        },
 
-    {state['bottlenecks']}
-
-    Suggest 
-    mitigation 
-    strategies
-
-    """
-
-    response = llm.invoke(prompt)
-
-    return {
-
-        "recommendations":[
-
-            response.content
-
-        ]
-
-    } #oyy sunn....dont put too much code rn...will be hard to debug later....once we finish one section, lets go to next., ahh see all this is just for us to get an idea ki har node mai kya ho raha
-      # we are gonna change it but abhi ke liye i just put it .t.hi..alrs  is mostly harcoded stuff....alrr but when u are building graph in the end, justs do start,end and repo analyzer....dont add other nodes to graph yet...alr
-def rollback_advisor(state):
-
-    if state["rollback_needed"]:
-
-        advice = """
-
-        Deployment not recommended.
-
-        Rollback suggested.
-
-        Stable version should be retained.
-
-        """
-
-    else:
-
-        advice = """
-
-        Deployment safe.
-
-        Rollback unnecessary.
-
-        """
-
-    return {
-
-        "rollback_message":advice
-
+        "worst_case":{
+            "reliability":
+                worst_case,
+            "expected_status":
+                "Potential Outage"
+        }
     }
 
-<<<<<<< HEAD
-def report_generator(state):
-    llm = Groq(
+    ##################################################
+
+    simulation_results = {
+        "aggregated_risk":
+            round(total_risk,2),
+        "simulated_failures":
+            simulated_failures,
+        "scenario_analysis":
+            scenarios
+    }
+
+    ##################################################
+
+    rollback = False
+    if worst_case < 60:
+        rollback = True
+
+    ##################################################
+
+    state["simulation_results"] = simulation_results
+    state["rollback_recommended"] = rollback
+
+    return state
+
+def report_generator(state: ReliabilityState) -> ReliabilityState:
+    llm = ChatGroq(
     model="llama-3.3-70b-versatile",
     temperature=0
     )
@@ -547,330 +414,48 @@ def report_generator(state):
 
     response = llm.invoke(prompt)
 
-    return {
-
-        "report":response.content
-
-=======
-def deployment_questions(state: ReliabilityState) -> ReliabilityState:
-    #will have to figure this out as iss mai we will have to call llm na
-    #so hardcoding initially
-    #u saw what i wrote above?? where?
-    #ohh accha ok ha that u said is correct but let just write some basic cheeze then we will modify it later as per our req....haa but where exactly are you planning to call the ast_pwarser rn?
-    #in the repo analyser
-    # alrr....seee...use a for loop...for everyfile in repo, call ast_parser and apss file as parameter.(will give syntax)....in the end we will call build_graph to get call graph and pass it to llm. alr thik
-    deployment = {
-
-        "peak_rps":5000,
-
-        "replicas":2,
-
-        "autoscaling":False,
-
-        "cache":False,
-
-        "db_connections":100
-
-    }
-
-    return {
-
-        "deployment_inputs":deployment
-
-    }
-
-def simulation_engine(state):
-
-    deployment = state["deployment_inputs"]
-
-    peak = deployment["peak_rps"]
-
-    replicas = deployment["replicas"]
-
-    db_limit = deployment["db_connections"]
-
-    capacity = replicas*1000
-
-    utilization = peak/capacity
-
-    db_usage = peak*0.05
-
-    latency = 200*(utilization)
-
-    results = {
-
-        "capacity":capacity,
-
-        "utilization":utilization,
-
-        "db_usage":db_usage,
-
-        "latency":latency
-
-    }
-
-    return {
-
-        "simulation_results":results
-
-    }
-
-def risk_assessor(state):
-
-    sim = state["simulation_results"]
-
-    deploy = state["deployment_inputs"]
-
-    risk = 0
-
-    bottlenecks = []
-
-    if sim["utilization"] > 0.8:
-
-        risk += 30
-
-        bottlenecks.append(
-
-            "Application overload"
-
-        )
-
-    if sim["db_usage"] > deploy["db_connections"]:
-
-        risk += 30
-
-        bottlenecks.append(
-
-            "Database saturation"
-
-        )
-
-    if deploy["autoscaling"] == False:
-
-        risk += 15
-
-        bottlenecks.append(
-
-            "No autoscaling"
-
-        )
-
-    if deploy["cache"] == False:
-
-        risk += 10
-
-        bottlenecks.append(
-
-            "Missing cache"
-
-        )
-
-    rollback = risk > 60
-
-    return {
-
-        "risk_score":risk,
-
-        "bottlenecks":bottlenecks,
-
-        "rollback_needed":rollback
-
-    }
-
-def mitigation_agent(state):
-
-    prompt = f"""
-
-Risk Score
-
-{state['risk_score']}
-
-Bottlenecks
-
-{state['bottlenecks']}
-
-Suggest mitigation strategies.
-
-"""
-
-    response = llm.invoke(prompt)
-
-    return {
-
-        "recommendations":[
-
-            response.content
-
-        ]
-
-    } #oyy sunn....dont put too much code rn...will be hard to debug later....once we finish one section, lets go to next., ahh see all this is just for us to get an idea ki har node mai kya ho raha
-      # we are gonna change it but abhi ke liye i just put it .t.hi..alrs  is mostly harcoded stuff....alrr but when u are building graph in the end, justs do start,end and repo analyzer....dont add other nodes to graph yet...alr
-def rollback_advisor(state):
-
-    if state["rollback_needed"]:
-
-        advice = """
-
-        Deployment not recommended.
-
-        Rollback suggested.
-
-        Stable version should be retained.
-
-        """
-
-    else:
-
-        advice = """
-
-Deployment safe.
-
-Rollback unnecessary.
-
-"""
-
-    return {
-
-        "rollback_message":advice
-
-    }
-
-def report_generator(state):
-
-    prompt = f"""
-
-Architecture
-
-{state['architecture']}
-
-Simulation
-
-{state['simulation_results']}
-
-Risk
-
-{state['risk_score']}
-
-Recommendations
-
-{state['recommendations']}
-
-Generate reliability report.
-
-"""
-
-    response = llm.invoke(prompt)
-
-    return {
-
-        "report":response.content
-
->>>>>>> 02d29d74d48571abb671c354c79a97f952fa0df3
-    }
+    return state
 
 builder = StateGraph(ReliabilityState)
 
 builder.add_node("generate_call_graph", generate_call_graph)
 
+builder.add_node("inter_llm_response",
+                 inter_llm_response)
+
 builder.add_node("architecture_extractor",
                  architecture_extractor)
 
-builder.add_node("deployment_questions",
-                 deployment_questions)
-
 builder.add_node("simulation_engine",
                  simulation_engine)
-
-builder.add_node("risk_assessor",
-                 risk_assessor)
-
-builder.add_node("mitigation_agent",
-                 mitigation_agent)
-
-builder.add_node("rollback_advisor",
-                 rollback_advisor)
 
 builder.add_node("report_generator",
                  report_generator)
 
 builder.add_edge(START, "generate_call_graph")
 
-# builder.add_edge(
-#     "repo_analyzer",
-#     "architecture_extractor"
-# )
-
-# builder.add_edge(
-#     "architecture_extractor",
-#     "deployment_questions"
-# )
-
-# builder.add_edge(
-#     "deployment_questions",
-#     "simulation_engine"
-# )
-
-# builder.add_edge(
-#     "simulation_engine",
-#     "risk_assessor"
-# )
-
-# builder.add_edge(
-#     "risk_assessor",
-#     "mitigation_agent"
-# )
-
-# builder.add_edge(
-#     "mitigation_agent",
-#     "rollback_advisor"
-# )
-
-# builder.add_edge(
-#     "rollback_advisor",
-#     "report_generator"
-# )
+builder.add_edge(
+    "generate_call_graph",
+    "inter_llm_response"
+)
 
 builder.add_edge(
-<<<<<<< HEAD
-    "generate_call_graph",
+    "inter_llm_response",
     "architecture_extractor"
 )
 
-# builder.add_edge(
-#     "architecture_extractor",
-#     "deployment_questions"
-# )
-
-# builder.add_edge(
-#     "deployment_questions",
-#     "simulation_engine"
-# )
-
-# builder.add_edge(
-#     "simulation_engine",
-#     "risk_assessor"
-# )
-
-# builder.add_edge(
-#     "risk_assessor",
-#     "mitigation_agent"
-# )
-
-# builder.add_edge(
-#     "mitigation_agent",
-#     "rollback_advisor"
-# )
-
-# builder.add_edge(
-#     "rollback_advisor",
-#     "report_generator"
-# )
-
 builder.add_edge(
     "architecture_extractor",
-=======
-    "repo_analyzer",
->>>>>>> 02d29d74d48571abb671c354c79a97f952fa0df3
+    "simulation_engine"
+)
+
+builder.add_edge(
+    "simulation_engine",
+    "report_generator"
+)
+
+builder.add_edge(
+    "report_generator",
     END
 )
 
@@ -886,12 +471,8 @@ print("Workflow saved as workflow.png")
 
 
 
-graph.invoke({"repo_path": "https://github.com/PranavKuppa/Email_Sender.git"})
+graph.invoke({"repo_path": "https://github.com/PranavKuppa/Email_Sender.git", "raw_function_data":[]})
 
     
-<<<<<<< HEAD
 
 
-=======
-    
->>>>>>> 02d29d74d48571abb671c354c79a97f952fa0df3
