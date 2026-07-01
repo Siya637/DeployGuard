@@ -219,7 +219,7 @@ def build_call_graph(build_dir: str = "build") -> dict:
 
     json_paths = [
     p for p in glob.glob(os.path.join(build_dir, "*.json"))
-    if os.path.basename(p) not in ("call_graph.json", "risk_factors.json", "llm_response.json")
+    if os.path.basename(p) not in ("call_graph.json", "risk_factors.json", "llm_response.json", "infra_signals.json", "send_emails.py.json")
 ]
 
     # first pass: collect every function as a node, and build a lookup

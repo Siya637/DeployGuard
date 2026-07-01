@@ -96,7 +96,7 @@ NODE_RULES = [
 ]
 
 
-def run_rules(call_graph: dict, raw_function_data: list, build_dir: str = "build") -> list:
+def run_rules(call_graph: dict, raw_function_data: list, infra_signals: list = None ,build_dir: str = "build") -> list:
     """
     call_graph: output of build_call_graph()
     raw_function_data: list of per-file ast_parser() outputs
@@ -128,6 +128,7 @@ def run_rules(call_graph: dict, raw_function_data: list, build_dir: str = "build
     with open(out_path, "w") as f:
         json.dump(flags, f, indent=2)
 
+    flags.append(rule_infra_risks(infra_signals or []))
     return flags
 
 
@@ -153,3 +154,36 @@ if __name__ == "__main__":
         json.dump(flags, f, indent=2)
 
     print(f"Wrote {len(flags)} risk flags to {out_path}")
+
+def rule_infra_risks(infra_signals: list) -> dict:
+    """
+    Aggregate all risks from deployment config files into a single
+    risk factor entry, bucketed by severity.
+    """
+    critical, high, medium = [], [], []
+
+    for signal in infra_signals:
+        for risk in signal.get("risks", []):
+            entry = {
+                "file": signal["filename"],
+                "type": risk["type"],
+                "detail": risk["detail"],
+            }
+            sev = risk.get("severity", "MEDIUM")
+            if sev == "CRITICAL":
+                critical.append(entry)
+            elif sev == "HIGH":
+                high.append(entry)
+            else:
+                medium.append(entry)
+
+    total = len(critical) + len(high) + len(medium)
+
+    return {
+        "rule": "infra_config_risks",
+        "triggered": total > 0,
+        "summary": f"{total} deployment config risk(s) found: {len(critical)} CRITICAL, {len(high)} HIGH, {len(medium)} MEDIUM",
+        "critical": critical,
+        "high": high,
+        "medium": medium,
+    }

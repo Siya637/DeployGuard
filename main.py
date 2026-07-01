@@ -1,5 +1,7 @@
 from ast_parser import ast_parser, build_call_graph
 from rules_engine import run_rules
+from infra_parser import parse_dockerfile, parse_compose, parse_k8s_manifest, parse_requirements
+
 
 from typing import TypedDict,Annotated,List,Union,Dict
 from langgraph.graph import StateGraph,START,END
@@ -41,9 +43,9 @@ class ReliabilityState(TypedDict):
     rollback_recommended: bool
     risk_score: float
     report: str
+    infra_signals:  List[Dict]
     
 
-    # this is basic boilerplate copde
 
 def generate_call_graph(state: ReliabilityState)->ReliabilityState:
     state["raw_function_data"] = []
@@ -82,37 +84,53 @@ def generate_call_graph(state: ReliabilityState)->ReliabilityState:
     
     #build call graph.json & store into cal_graph state variable
     state["call_graph"] = build_call_graph("build")
+    
+    #
+    infra_signals = []
+
+    for root, dirs, files in os.walk(clone_path):
+        dirs[:] = [d for d in dirs if d not in (".git", "venv", "__pycache__", "node_modules")]
+
+        for fname in files:
+            fpath = os.path.join(root, fname)
+            rel = os.path.relpath(fpath, start=clone_path)
+
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+            except OSError:
+                continue
+
+            # Dockerfile (any variant: Dockerfile, Dockerfile.prod, etc.)
+            if fname.startswith("Dockerfile"):
+                infra_signals.append(parse_dockerfile(content, rel))
+
+            # docker-compose
+            elif fname in ("docker-compose.yml", "docker-compose.yaml") or fname.startswith("docker-compose"):
+                infra_signals.append(parse_compose(content, rel))
+
+            # Kubernetes — detect by presence of 'kind:' key
+            elif fname.endswith((".yml", ".yaml")) and "kind:" in content:
+                infra_signals.append(parse_k8s_manifest(content, rel))
+
+            # requirements.txt
+            elif fname == "requirements.txt":
+                infra_signals.append(parse_requirements(content, rel))
+
+    state["infra_signals"] = infra_signals
+
+    # Save for inspection
+    with open("build/infra_signals.json", "w") as f:
+        json.dump(infra_signals, f, indent=2)
 
     #build risk_factors.json & store into risk_factor state variable
     
-    risk_flags = run_rules(state["call_graph"], state["raw_function_data"])
+    risk_flags = run_rules(state["call_graph"], state["raw_function_data"], state["infra_signals"])
     os.makedirs("build", exist_ok=True)
     with open("build/risk_factors.json", "w") as f:
         json.dump(risk_flags, f, indent=2)
     state["risk_factor"] = risk_flags
 
-    # stack = {}
-
-    # files = os.listdir(clone_path)
-
-    # if "requirements.txt" in files:
-    #     stack["python"]=True
-
-    # if "Dockerfile" in files:
-    #     stack["docker"]=True
-
-    # if "docker-compose.yml" in files:
-    #     stack["compose"]=True
-
-    # if "package.json" in files:
-    #     stack["node"]=True
-
-    # if "k8s" in files:
-    #     stack["kubernetes"]=True
-
-    # return {
-    #     "stack": stack
-    # }
     return state
 
 
@@ -196,6 +214,7 @@ def inter_llm_response(state: ReliabilityState)->ReliabilityState:
         Risk Factors
         {state["risk_factor"]}
 
+        INFRA_SIGNALS: {json.dumps(state["infra_signals"], indent=2)}
         Deployment Information
         {json.dumps(state["deployment_context"], indent=2)}
 
@@ -245,6 +264,8 @@ def architecture_extractor(state: ReliabilityState) -> ReliabilityState:
         FAILURE_POINTS:
         {state["failure_points"]}
 
+        INFRA_SIGNALS: {json.dumps(state["infra_signals"], indent=2)}
+        
         DEPLOYMENT_CONTEXT (if collected):
         {state["deployment_context"]}
     """
@@ -436,6 +457,8 @@ def report_generator(state: ReliabilityState) -> ReliabilityState:
     """
 
     closure_response = llm.invoke([HumanMessage(content=close_prompt)])
+    with open("reliability_report.md", "w", encoding="utf-8") as f:
+        f.write(closure_response.content)
 
     print(closure_response.content)
 
@@ -496,7 +519,7 @@ print("Workflow saved as workflow.png")
 
 
 
-graph.invoke({"repo_path": "https://github.com/PranavKuppa/Email_Sender.git", "raw_function_data":[]})
+graph.invoke({"repo_path": "https://github.com/dockersamples/example-voting-app", "raw_function_data":[]})
 
     
 
