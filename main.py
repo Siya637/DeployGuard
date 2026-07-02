@@ -3,18 +3,15 @@ from rules_engine import run_rules
 from infra_parser import parse_dockerfile, parse_compose, parse_k8s_manifest, parse_requirements
 
 
-from typing import TypedDict,Annotated,List,Union,Dict
+from typing import TypedDict,List,Dict
 from langgraph.graph import StateGraph,START,END
-from langchain_core.messages import BaseMessage,HumanMessage,AIMessage,SystemMessage
-from langgraph.graph.message import add_messages
+from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage
 from IPython.display import display,Image
 
 import os
-import ast
 import json
-import yaml
 import glob
 import re
 from json_repair import repair_json
@@ -39,7 +36,7 @@ class ReliabilityState(TypedDict):
     risk_factor: dict
     assessment: dict
     failure_points :dict
-    reliability_score: int
+    reliability_score: float
     risk_level: str
     deployment_context: List
     architecture: Dict
@@ -441,16 +438,67 @@ def extract_json(text: str):
     except json.JSONDecodeError:
         return json.loads(repair_json(raw))
 
+# def pick_block(parsed, key: str):
+#     """From a parsed result (dict or list of dicts), return the one containing key."""
+#     if isinstance(parsed, dict):
+#         return parsed
+#     if isinstance(parsed, list):
+#         for item in parsed:
+#             if isinstance(item, dict) and key in item:
+#                 return item
+#     raise ValueError(f"No JSON block with key '{key}' found. Got: {parsed}")
 
 def pick_block(parsed, key: str):
-    """From a parsed result (dict or list of dicts), return the one containing key."""
-    if isinstance(parsed, dict):
-        return parsed
-    if isinstance(parsed, list):
-        for item in parsed:
-            if isinstance(item, dict) and key in item:
-                return item
-    raise ValueError(f"No JSON block with key '{key}' found. Got: {parsed}")
+    """Recursively search a parsed JSON result (dict/list, arbitrarily nested)
+    for the first dict that contains `key`, and return that dict."""
+
+    def _search(obj):
+        if isinstance(obj, dict):
+            if key in obj:
+                return obj
+            for v in obj.values():
+                found = _search(v)
+                if found is not None:
+                    return found
+        elif isinstance(obj, list):
+            for item in obj:
+                found = _search(item)
+                if found is not None:
+                    return found
+        return None
+
+    result = _search(parsed)
+    if result is None:
+        raise ValueError(
+            f"No JSON block with key '{key}' found in LLM output.\n"
+            f"Parsed structure was: {json.dumps(parsed, indent=2)[:1000]}"
+        )
+    return result
+
+def invoke_for_json(llm, prompt: str, key: str, max_attempts: int = 3):
+    """Calls the LLM, extracts JSON, and finds the block containing `key`.
+    On failure, re-prompts with the actual error so the model can self-correct."""
+    messages = [HumanMessage(content=prompt)]
+    last_error = None
+
+    for attempt in range(1, max_attempts + 1):
+        response = llm.invoke(messages)
+        try:
+            parsed = extract_json(response.content)
+            return pick_block(parsed, key)
+        except (ValueError, KeyError) as e:
+            last_error = e
+            print(f"[WARN] Attempt {attempt}/{max_attempts} failed to produce valid JSON: {e}")
+            if attempt < max_attempts:
+                messages.append(response)
+                messages.append(HumanMessage(content=(
+                    f"Your previous response was not valid JSON containing a '{key}' key. "
+                    f"Error: {e}\n\n"
+                    f"Respond with ONLY a valid JSON object containing '{key}'. "
+                    f"No markdown, no code fences, no commentary — JSON only."
+                )))
+
+    raise ValueError(f"LLM failed to produce valid JSON with key '{key}' after {max_attempts} attempts. Last error: {last_error}")
 
 def inter_llm_response(state: ReliabilityState)->ReliabilityState:
 
@@ -458,7 +506,8 @@ def inter_llm_response(state: ReliabilityState)->ReliabilityState:
         api_key=GROQ_API_KEY,
         model="meta-llama/llama-4-scout-17b-16e-instruct",
         temperature=0,
-        max_retries=6
+        max_retries=6,
+        model_kwargs={"response_format": {"type": "json_object"}},
     )
     
     with open("prompts/questions_prompt.txt", "r", encoding="utf-8") as f:
@@ -480,9 +529,12 @@ def inter_llm_response(state: ReliabilityState)->ReliabilityState:
     # questions_json = extract_json(question_response.content)
     # questions = questions_json["questions"]
 
-    question_response = llm.invoke([HumanMessage(content=question_prompt)])
-    parsed = extract_json(question_response.content)
-    questions_block = pick_block(parsed, "questions")
+    # question_response = llm.invoke([HumanMessage(content=question_prompt)])
+    # parsed = extract_json(question_response.content)
+    # questions_block = pick_block(parsed, "questions")
+    # questions = questions_block["questions"]
+
+    questions_block = invoke_for_json(llm, question_prompt, "questions")
     questions = questions_block["questions"]
 
     print("\nQuestions:\n")
@@ -521,9 +573,11 @@ def inter_llm_response(state: ReliabilityState)->ReliabilityState:
 
     """ 
 
-    response = llm.invoke([HumanMessage(content=assessment_prompt)])
-    parsed = extract_json(response.content)
-    assessment_json = pick_block(parsed, "reliability_score")  # grabs the right block
+    # response = llm.invoke([HumanMessage(content=assessment_prompt)])
+    # parsed = extract_json(response.content)
+    # assessment_json = pick_block(parsed, "reliability_score")  # grabs the right block
+
+    assessment_json = invoke_for_json(llm, assessment_prompt, "reliability_score")
 
     state["failure_points"]     = assessment_json.get("failure_points", [])
     state["reliability_score"]  = assessment_json.get("reliability_score", 0)
@@ -576,7 +630,7 @@ def architecture_extractor(state: ReliabilityState) -> ReliabilityState:
 def simulation_engine(state: ReliabilityState) -> ReliabilityState:
 
     failure_points    = state["failure_points"]
-    reliability_score = state["reliability_score"]
+    reliability_score = float(state["reliability_score"])
 
     # ------------------------------------------------------------------
     # How much reliability degrades when a failure point is active.
