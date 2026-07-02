@@ -26,6 +26,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("API_KEY")
+GIT_URL = os.getenv("REP_URL")
+_SKIP_DIRS  = {".git", "venv", "__pycache__", "node_modules"}
+_BUILD_JSONS = {"call_graph.json", "risk_factors.json",
+                "llm_response.json", "infra_signals.json"}
 
 class ReliabilityState(TypedDict):
 
@@ -44,23 +48,298 @@ class ReliabilityState(TypedDict):
     risk_score: float
     report: str
     infra_signals:  List[Dict]
+    clone_path: str
+    repo_status: str
     
+def get_repo(state: ReliabilityState) -> ReliabilityState:
+    repo = state["repo_path"]
+    repo_name = os.path.splitext(os.path.basename(repo))[0]
+    build_dir = repo_name + "_clone"
+    clone_path = os.path.expanduser(build_dir)
+    state["clone_path"] = clone_path
 
+    gitignore_path = ".gitignore"
+
+    # Create .gitignore if it doesn't exist
+    if not os.path.exists(gitignore_path):
+        open(gitignore_path, "w").close()
+
+    # Read existing entries
+    with open(gitignore_path, "r") as f:
+        entries = [line.strip() for line in f]
+
+    # Add only if not already present
+    if build_dir not in entries:
+        with open(gitignore_path, "a") as f:
+            f.write(f"\n{build_dir}/\n")
+
+    # Clone the repository if it doesn't exist locally
+    if not os.path.exists(clone_path):
+        Repo.clone_from(repo, clone_path)
+        state["repo_status"] = "CLONED"
+    else:
+        print("Repo already exists locally, skipping clone.")
+        state["repo_status"] = "NOT CLONED"
+    
+    return state
+
+def route_repo(state: ReliabilityState) -> str:
+    return state["repo_status"]
+ 
+def _load_existing_call_graph(build_dir: str = "build") -> dict:
+    path = os.path.join(build_dir, "call_graph.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return {"nodes": [], "edges": [], "unresolved_calls": [], "errors": []}
+
+def _load_existing_infra_signals(build_dir: str = "build") -> list:
+    path = os.path.join(build_dir, "infra_signals.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return []
+
+def _rebuild_fan_metrics(graph: dict) -> None:
+    """Recompute fan_in / fan_out in-place from current edges."""
+    fan_in:  dict = {}
+    fan_out: dict = {}
+    for edge in graph["edges"]:
+        fan_out[edge["caller"]] = fan_out.get(edge["caller"], 0) + 1
+        fan_in[edge["callee"]]  = fan_in.get(edge["callee"],  0) + 1
+    for node in graph["nodes"]:
+        node["fan_in"]  = fan_in.get(node["id"],  0)
+        node["fan_out"] = fan_out.get(node["id"], 0)
+ 
+def _load_raw_function_data_from_build(build_dir: str = "build") -> List[Dict]:
+    """Reconstruct raw_function_data by loading every per-file JSON
+    that build_call_graph() wrote — needed as input to run_rules()."""
+    result = []
+    for path in glob.glob(os.path.join(build_dir, "*.json")):
+        if os.path.basename(path) in _BUILD_JSONS:
+            continue
+        try:
+            with open(path) as f:
+                result.append(json.load(f))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return result       
+
+def pull_new_files(state: ReliabilityState) -> ReliabilityState:
+    """
+    Incremental update path (repo was already cloned).
+ 
+    Steps
+    ─────
+    1.  git pull; diff HEAD before/after to get changed file paths.
+    2.  Re-parse changed .py files → overwrite their per-file build JSONs.
+    3.  Re-parse changed infra files.
+    4.  Splice new data into call_graph.json (remove stale, add fresh,
+        rebuild fan metrics).  Save.
+    5.  Splice new data into infra_signals.json.  Save.
+    6.  Re-run run_rules() → new risk_factors.json.
+    7.  Populate state so the pipeline can continue from inter_llm_response.
+    """
+    clone_path = state["clone_path"]
+    build_dir  = "build"
+    os.makedirs(build_dir, exist_ok=True)
+ 
+    # ── Step 1: pull and collect changed paths ────────────────
+    repo       = Repo(clone_path)
+    old_commit = repo.head.commit
+    repo.remotes.origin.pull()
+    new_commit = repo.head.commit
+ 
+    changed_paths: set[str] = set()
+    if old_commit != new_commit:
+        for item in old_commit.diff(new_commit):
+            # a_path = before-pull name, b_path = after-pull name
+            # normalise to forward-slash relative paths
+            for p in (item.a_path, item.b_path):
+                if p:
+                    changed_paths.add(p.replace("\\", "/"))
+        print(f"pull_new_files: {len(changed_paths)} changed path(s): {changed_paths}")
+    else:
+        print("pull_new_files: already up-to-date, no changes detected.")
+        # Still wire up state from disk so the rest of the pipeline runs.
+        state["call_graph"]        = _load_existing_call_graph(build_dir)
+        state["infra_signals"]     = _load_existing_infra_signals(build_dir)
+        state["raw_function_data"] = _load_raw_function_data_from_build(build_dir)
+        rf_path = os.path.join(build_dir, "risk_factors.json")
+        with open(rf_path) as f:
+            state["risk_factor"] = json.load(f)
+        return state
+ 
+    changed_py    = {p for p in changed_paths if p.endswith(".py")}
+    changed_infra = {p for p in changed_paths if not p.endswith(".py")}
+ 
+    # ── Step 2: re-parse changed Python files ─────────────────
+    new_file_data: List[Dict] = []
+    deleted_py:    set[str]   = set()
+ 
+    for rel_path in changed_py:
+        abs_path = os.path.join(clone_path, rel_path)
+        if not os.path.exists(abs_path):
+            # file was deleted — mark for removal; clean up build JSON
+            deleted_py.add(rel_path)
+            safe_name = rel_path.replace("/", "__").replace("\\", "__")
+            stale_json = os.path.join(build_dir, f"{safe_name}.json")
+            if os.path.exists(stale_json):
+                os.remove(stale_json)
+                print(f"  removed stale build JSON: {stale_json}")
+            continue
+ 
+        try:
+            with open(abs_path, "r", encoding="utf-8") as f:
+                source = f.read()
+            # ast_parser also overwrites the per-file JSON in build/
+            parsed = ast_parser(source, rel_path, build_dir=build_dir)
+            new_file_data.append(parsed)
+            print(f"  re-parsed: {rel_path}")
+        except SyntaxError as e:
+            print(f"  skipping {rel_path} (syntax error): {e}")
+ 
+    # ── Step 3: re-parse changed infra files ──────────────────
+    new_infra_signals: List[Dict] = []
+ 
+    for rel_path in changed_infra:
+        abs_path = os.path.join(clone_path, rel_path)
+        if not os.path.exists(abs_path):
+            continue                    # deleted — will be pruned below
+        base = os.path.basename(rel_path)
+        try:
+            with open(abs_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+        except OSError:
+            continue
+ 
+        if base.startswith("Dockerfile"):
+            new_infra_signals.append(parse_dockerfile(content, rel_path))
+        elif base.startswith("docker-compose"):
+            new_infra_signals.append(parse_compose(content, rel_path))
+        elif rel_path.endswith((".yml", ".yaml")) and "kind:" in content:
+            new_infra_signals.append(parse_k8s_manifest(content, rel_path))
+        elif base == "requirements.txt":
+            new_infra_signals.append(parse_requirements(content, rel_path))
+ 
+    # ── Step 4: splice new Python data into call_graph ────────
+    graph = _load_existing_call_graph(build_dir)
+ 
+    # files whose entries need to be wiped (changed OR deleted)
+    stale_files = (changed_py | deleted_py)
+ 
+    graph["nodes"] = [
+        n for n in graph["nodes"]
+        if n["file"].replace("\\", "/") not in stale_files
+    ]
+    graph["edges"] = [
+        e for e in graph["edges"]
+        if not any([
+            e["caller"].split("::")[0].replace("\\", "/") in stale_files,
+            e["callee"].split("::")[0].replace("\\", "/") in stale_files,
+        ])
+    ]
+
+    graph["unresolved_calls"] = [
+        u for u in graph["unresolved_calls"]
+        if u["caller"].split("::")[0].replace("\\", "/") not in stale_files
+    ]
+ 
+    # Build a name→[id] lookup from surviving nodes, then extend with new ones
+    name_lookup: dict[str, list[str]] = {}
+    for node in graph["nodes"]:
+        name_lookup.setdefault(node["name"], []).append(node["id"])
+ 
+    for file_data in new_file_data:
+        for func in file_data.get("functions", []):
+            func_id = f"{file_data['filename']}::{func['name']}"
+            graph["nodes"].append({
+                "id":         func_id,
+                "file":       file_data["filename"],
+                "name":       func["name"],
+                "args":       func["args"],
+                "line_start": func["line_start"],
+                "line_end":   func["line_end"],
+                "risk_tags":  func["risk_tags"],
+                "fan_in":     0,
+                "fan_out":    0,
+            })
+            name_lookup.setdefault(func["name"], []).append(func_id)
+ 
+    # Resolve calls for the newly-parsed functions
+    for file_data in new_file_data:
+        for func in file_data.get("functions", []):
+            caller_id = f"{file_data['filename']}::{func['name']}"
+            for call in func.get("calls", []):
+                call_name = call.get("name")
+                if not call_name:
+                    continue
+                candidates = name_lookup.get(call_name)
+                if not candidates:
+                    candidates = name_lookup.get(call_name.split(".")[-1])
+                if candidates:
+                    for callee_id in candidates:
+                        graph["edges"].append({
+                            "caller":    caller_id,
+                            "callee":    callee_id,
+                            "line":      call["line"],
+                            "risk_tags": call["risk_tags"],
+                        })
+                else:
+                    graph["unresolved_calls"].append({
+                        "caller":    caller_id,
+                        "call_name": call_name,
+                        "line":      call["line"],
+                        "risk_tags": call["risk_tags"],
+                    })
+ 
+    _rebuild_fan_metrics(graph)
+ 
+    with open(os.path.join(build_dir, "call_graph.json"), "w") as f:
+        json.dump(graph, f, indent=4)
+    print(f"  call_graph.json updated ({len(graph['nodes'])} nodes, {len(graph['edges'])} edges)")
+ 
+    state["call_graph"] = graph
+ 
+    # ── Step 5: splice new infra signals ──────────────────────
+    existing_infra = _load_existing_infra_signals(build_dir)
+ 
+    # prune stale entries (changed or deleted files)
+    stale_rel = {p.replace("\\", "/") for p in changed_infra}
+    existing_infra = [
+        s for s in existing_infra
+        if s.get("filename", "").replace("\\", "/") not in stale_rel
+    ]
+    existing_infra.extend(new_infra_signals)
+ 
+    with open(os.path.join(build_dir, "infra_signals.json"), "w") as f:
+        json.dump(existing_infra, f, indent=2)
+ 
+    state["infra_signals"] = existing_infra
+ 
+    # ── Step 6: re-run rules ──────────────────────────────────
+    raw_function_data = _load_raw_function_data_from_build(build_dir)
+    state["raw_function_data"] = raw_function_data
+ 
+    risk_flags = run_rules(graph, raw_function_data, existing_infra, build_dir=build_dir)
+    state["risk_factor"] = risk_flags
+ 
+    return state
 
 def generate_call_graph(state: ReliabilityState)->ReliabilityState:
     state["raw_function_data"] = []
-    repo = state["repo_path"]
-    clone_path = os.path.expanduser("~/repo_clone")
+    # repo = state["repo_path"]
+    # clone_path = os.path.expanduser("~/repo_clone")
 
-    #clone repo
-    if not os.path.exists(clone_path):
-        git.Repo.clone_from(repo, clone_path)
-    else:
-        print("Repo already exists locally, skipping clone.")
+    # #clone repo
+    # if not os.path.exists(clone_path):
+    #     git.Repo.clone_from(repo, clone_path)
+    # else:
+    #     print("Repo already exists locally, skipping clone.")
 
     #storing only python files
     python_files = []
-    for root, dirs, files in os.walk(clone_path):
+    for root, dirs, files in os.walk(state["clone_path"]):
         # skip common noise folders
         dirs[:] = [d for d in dirs if d not in (".git", "venv", "__pycache__", "node_modules")]
         for file in files:
@@ -73,7 +352,7 @@ def generate_call_graph(state: ReliabilityState)->ReliabilityState:
             source_code = f.read()
 
         try:
-            rel_filename = os.path.relpath(filename, start=clone_path)
+            rel_filename = os.path.relpath(filename, start=state["clone_path"])
             result = ast_parser(source_code, rel_filename)
             state["raw_function_data"].append(result)
 
@@ -88,12 +367,12 @@ def generate_call_graph(state: ReliabilityState)->ReliabilityState:
     #
     infra_signals = []
 
-    for root, dirs, files in os.walk(clone_path):
+    for root, dirs, files in os.walk(state["clone_path"]):
         dirs[:] = [d for d in dirs if d not in (".git", "venv", "__pycache__", "node_modules")]
 
         for fname in files:
             fpath = os.path.join(root, fname)
-            rel = os.path.relpath(fpath, start=clone_path)
+            rel = os.path.relpath(fpath, start=state["clone_path"])
 
             try:
                 with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
@@ -133,41 +412,59 @@ def generate_call_graph(state: ReliabilityState)->ReliabilityState:
 
     return state
 
-
-def extract_json(text: str) -> dict:
+def extract_json(text: str):
     text = text.strip()
     if not text:
         raise ValueError("LLM returned empty content")
 
-    match = re.search(r"\{.*\}", text, re.DOTALL)
+    # Find ALL top-level {...} blocks (non-greedy won't work; use findall)
+    matches = re.findall(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)* \}', text, re.DOTALL)
+    # Simpler: split on ```json fences first
+    fence_blocks = re.findall(r'```json\s*(.*?)```', text, re.DOTALL)
+    
+    if fence_blocks:
+        results = []
+        for block in fence_blocks:
+            try:
+                results.append(json.loads(block.strip()))
+            except json.JSONDecodeError:
+                results.append(json.loads(repair_json(block.strip())))
+        return results if len(results) > 1 else results[0]
+
+    # Fallback: grab first {...}
+    match = re.search(r'\{.*?\}', text, re.DOTALL)
     if not match:
-        raise ValueError(f"No JSON object found in LLM output: {text[:200]!r}")
-
+        raise ValueError(f"No JSON found in LLM output: {text[:200]!r}")
     raw = match.group(0)
-
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        try:
-            return json.loads(repair_json(raw))
-        except Exception as e:
-            raise ValueError(
-                f"Failed to parse or repair JSON from LLM output: {raw[:200]!r}"
-            ) from e
+        return json.loads(repair_json(raw))
 
+
+def pick_block(parsed, key: str):
+    """From a parsed result (dict or list of dicts), return the one containing key."""
+    if isinstance(parsed, dict):
+        return parsed
+    if isinstance(parsed, list):
+        for item in parsed:
+            if isinstance(item, dict) and key in item:
+                return item
+    raise ValueError(f"No JSON block with key '{key}' found. Got: {parsed}")
 
 def inter_llm_response(state: ReliabilityState)->ReliabilityState:
 
     llm = ChatGroq(
         api_key=GROQ_API_KEY,
-        model="llama-3.3-70b-versatile",
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
         temperature=0,
+        max_retries=6
     )
     
-    with open("questions_prompt.txt", "r", encoding="utf-8") as f:
+    with open("prompts/questions_prompt.txt", "r", encoding="utf-8") as f:
         questions_prompt = f.read()
 
-    with open("assessment_prompt.txt", "r", encoding="utf-8") as f:
+    with open("prompts/assessment_prompt.txt", "r", encoding="utf-8") as f:
         assessment_prompt = f.read()
 
 
@@ -179,14 +476,18 @@ def inter_llm_response(state: ReliabilityState)->ReliabilityState:
         {state["risk_factor"]}
 
     """
+    # question_response = llm.invoke([HumanMessage(content=question_prompt)])
+    # questions_json = extract_json(question_response.content)
+    # questions = questions_json["questions"]
+
     question_response = llm.invoke([HumanMessage(content=question_prompt)])
-    questions_json = extract_json(question_response.content)
-    questions = questions_json["questions"]
+    parsed = extract_json(question_response.content)
+    questions_block = pick_block(parsed, "questions")
+    questions = questions_block["questions"]
 
     print("\nQuestions:\n")
-
     for i, q in enumerate(questions, start=1):
-        print(f"{i}. {q}")
+        print(f"{i}. {q}")   # q is now a plain string, not a dict
 
     print("\nProvide answers in the same order.")
     print("Write answers by separating them with a comma.\n")
@@ -221,17 +522,13 @@ def inter_llm_response(state: ReliabilityState)->ReliabilityState:
     """ 
 
     response = llm.invoke([HumanMessage(content=assessment_prompt)])
-    assessment_json = extract_json(response.content)  # now with repair_json fallback
+    parsed = extract_json(response.content)
+    assessment_json = pick_block(parsed, "reliability_score")  # grabs the right block
 
-    if assessment_json is None:
-        print("inter_llm_response: failed to parse LLM output")
-        print(repr(response.content))
-        assessment_json = {}
-
-    state["failure_points"] = assessment_json.get("failure_points", [])   # fixed: underscore
-    state["reliability_score"] = assessment_json.get("reliability_score", 0)
-    state["risk_level"] = assessment_json.get("risk_level", "UNKNOWN")
-    state["assessment"] = assessment_json
+    state["failure_points"]     = assessment_json.get("failure_points", [])
+    state["reliability_score"]  = assessment_json.get("reliability_score", 0)
+    state["risk_level"]         = assessment_json.get("risk_level", "UNKNOWN")
+    state["assessment"]         = assessment_json
 
     out_path = os.path.join("build", "llm_response.json")
     with open(out_path, "w") as f:
@@ -242,11 +539,12 @@ def inter_llm_response(state: ReliabilityState)->ReliabilityState:
 def architecture_extractor(state: ReliabilityState) -> ReliabilityState:
     llm = ChatGroq(
         api_key=GROQ_API_KEY,
-        model="llama-3.3-70b-versatile",
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
         temperature=0,
+        max_retries=6
     )
     
-    with open("architecture_prompt.txt", "r", encoding="utf-8") as f:
+    with open("prompts/architecture_prompt.txt", "r", encoding="utf-8") as f:
         architecture_prompt = f.read()
 
 
@@ -419,12 +717,12 @@ def simulation_engine(state: ReliabilityState) -> ReliabilityState:
 def report_generator(state: ReliabilityState) -> ReliabilityState:
     llm = ChatGroq(
         api_key=GROQ_API_KEY,
-        model="llama-3.3-70b-versatile",
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
         temperature=0,
         max_retries=6
     )
 
-    with open("closure_prompt.txt", "r", encoding="utf-8") as f:
+    with open("prompts/closure_prompt.txt", "r", encoding="utf-8") as f:
         closure_prompt = f.read()
 
     close_prompt = f"""
@@ -466,7 +764,13 @@ def report_generator(state: ReliabilityState) -> ReliabilityState:
 
 builder = StateGraph(ReliabilityState)
 
-builder.add_node("generate_call_graph", generate_call_graph)
+builder.add_node("get_repo", 
+                 get_repo)
+
+builder.add_node("pull_new_files", pull_new_files)
+
+builder.add_node("generate_call_graph", 
+                 generate_call_graph)
 
 builder.add_node("inter_llm_response",
                  inter_llm_response)
@@ -480,12 +784,26 @@ builder.add_node("simulation_engine",
 builder.add_node("report_generator",
                  report_generator)
 
-builder.add_edge(START, "generate_call_graph")
+builder.add_edge(START, "get_repo")
+
+builder.add_conditional_edges(
+    "get_repo",
+    route_repo,
+    {
+        "CLONED": "generate_call_graph",
+        "NOT CLONED": "pull_new_files",
+    }
+)
 
 builder.add_edge(
     "generate_call_graph",
     "inter_llm_response"
 )
+
+builder.add_edge(
+    "pull_new_files",      
+    "inter_llm_response"
+) 
 
 builder.add_edge(
     "inter_llm_response",
@@ -509,18 +827,10 @@ builder.add_edge(
 
 graph = builder.compile()
 
-
 png_data = graph.get_graph().draw_mermaid_png()
 
 with open("workflow.png", "wb") as f:
     f.write(png_data)
 
 print("Workflow saved as workflow.png")
-
-
-
-graph.invoke({"repo_path": "https://github.com/dockersamples/example-voting-app", "raw_function_data":[]})
-
-    
-
-
+graph.invoke({"repo_path": GIT_URL, "raw_function_data":[]})

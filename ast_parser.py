@@ -131,7 +131,7 @@ class CodeVisitor(ast.NodeVisitor):
         self.functions.append(func_record)
 
 
-def ast_parser(source_code: str, filename: str = "<string>") -> dict:
+def ast_parser(source_code: str, filename: str = "<string>",build_dir: str = "build") -> dict:
     """
     Parse a Python source string and return a JSON-serializable dict:
     {
@@ -160,7 +160,7 @@ def ast_parser(source_code: str, filename: str = "<string>") -> dict:
     result["imports"] = visitor.imports
     result["functions"] = visitor.functions
 
-    save_ast_json(result, build_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "build"))
+    save_ast_json(result, build_dir)
 
     return result
 
@@ -309,32 +309,3 @@ def build_call_graph(build_dir: str = "build") -> dict:
         graph["errors"].append(f"Failed to write {output_path}: {e}")
 
     return graph
-
-
-if __name__ == "__main__":
-    # quick manual test across two "files" to exercise the multi-file flow
-    file_a = """
-import requests
-
-def fetch_data(url):
-    resp = requests.get(url)
-    return resp.json()
-"""
-
-    file_b = """
-from utils import fetch_data
-
-def save_to_disk(data, path):
-    with open(path, "w") as f:
-        f.write(data)
-
-def run_pipeline(url, path):
-    data = fetch_data(url)
-    save_to_disk(data, path)
-"""
-
-    ast_parser(file_a, filename="utils.py")
-    ast_parser(file_b, filename="main.py") 
-
-    call_graph = build_call_graph(build_dir="build")
-    print(json.dumps(call_graph, indent=2))

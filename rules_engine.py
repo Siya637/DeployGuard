@@ -132,29 +132,6 @@ def run_rules(call_graph: dict, raw_function_data: list, infra_signals: list = N
     return flags
 
 
-if __name__ == "__main__":
-    # quick manual test - assumes build_call_graph() output and the
-    # raw per-file parsed data are both available
-    import os
-    import glob
-
-    build_dir = "build"
-    raw_function_data = []
-    for path in glob.glob(os.path.join(build_dir, "*.json")):
-        with open(path) as f:
-            raw_function_data.append(json.load(f))
-
-    from ast_parser import build_call_graph
-    call_graph = build_call_graph(build_dir=build_dir)
-
-    flags = run_rules(call_graph, raw_function_data)
-
-    out_path = os.path.join(build_dir, "risk_factors.json")
-    with open(out_path, "w") as f:
-        json.dump(flags, f, indent=2)
-
-    print(f"Wrote {len(flags)} risk flags to {out_path}")
-
 def rule_infra_risks(infra_signals: list) -> dict:
     """
     Aggregate all risks from deployment config files into a single

@@ -7,9 +7,35 @@ repo_clone/
 venv/
 __pycache__/
 
-#all images
-<<<<<<< HEAD
-*.png
-=======
-*.png
 >>>>>>> 02d29d74d48571abb671c354c79a97f952fa0df3
+#reports
+*.md
+example-voting-app_clone/
+
+example-voting-app_clone/
+
+example-voting-app_clone/
+
+example-voting-app_clone/
+
+example-voting-app_clone/
+
+example-voting-app_clone/
+
+example-voting-app_clone/
+
+example-voting-app_clone/
+
+test_clone/
+
+test_clone/
+
+test_clone/
+
+test_clone/
+
+test_clone/
+
+test_clone/
+
+test_clone/
