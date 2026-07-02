@@ -5,7 +5,7 @@ import re
 import json
 import os
 
-
+#parses the docker and .yml files
 def parse_dockerfile(content: str, filename: str = "Dockerfile") -> dict:
     signals = {
         "filename": filename,
