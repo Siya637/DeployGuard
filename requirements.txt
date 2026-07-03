@@ -4,6 +4,6 @@ langchain-core
 GitPython
 PyYAML
 ipython
-json-repair --break-system-packages
+json-repair 
 python-dotenv
 langchain-groq
