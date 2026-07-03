@@ -12,6 +12,10 @@ rule-based risk detection, infrastructure/config scanning) with a **LLM reasonin
 pipeline** orchestrated by [LangGraph](https://github.com/langchain-ai/langgraph) and
 served by [Groq](https://groq.com/).
 
+DeployGuard can be used either from the **command line** (`python main.py`) or through a
+**web chat interface** — a single-page React app served by a FastAPI backend — with both
+driving the same analysis pipeline.
+
 ---
 
 ## Table of Contents
@@ -23,6 +27,7 @@ served by [Groq](https://groq.com/).
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Usage](#usage)
+- [Web interface (chat UI)](#web-interface-chat-ui)
 - [Output & artifacts](#output--artifacts)
 - [How the analysis is done](#how-the-analysis-is-done)
 - [Extending DeployGuard](#extending-deployguard)
@@ -107,6 +112,15 @@ DeployGuard/
 │   ├── assessment_prompt.txt     # Phase 2: full reliability assessment (score, risks)
 │   ├── architecture_prompt.txt   # Build simulation-ready architecture model
 │   └── closure_prompt.txt        # Final Markdown report format
+├── backend/
+│   └── server.py        # FastAPI web server: wraps the pipeline, streams progress (SSE)
+├── frontend/            # React + Vite chat UI (build output in frontend/dist/)
+│   ├── src/             # App source (chat interface, streaming, Markdown report render)
+│   └── package.json     # Frontend dependencies + build scripts
+├── deployment/
+│   ├── Dockerfile       # Multi-stage build: frontend build + Python runtime
+│   ├── railway.toml     # Railway deployment config (Docker builder, health check)
+│   └── DEPLOYMENT.md    # Deployment guide (local, Docker, Railway)
 ├── requirements.txt     # Python dependencies
 ├── .env.example         # Template for required environment variables
 ├── .gitignore
@@ -126,6 +140,8 @@ Files/folders created at runtime (all git-ignored):
 - **Python 3.9+** (the code uses modern type-hint syntax such as `set[str]`).
 - A **Groq API key** (the LLM steps call Groq's `meta-llama/llama-4-scout-17b-16e-instruct`).
 - **Git** installed and available on your `PATH` (used via GitPython to clone/pull).
+- **Node.js 18+** and **npm** — only required to build the web UI in `frontend/` (not
+  needed for the command-line pipeline).
 - Network access to clone the target repo and reach the Groq API.
 
 Python dependencies (from `requirements.txt`):
@@ -177,6 +193,11 @@ REP_URL = "https://github.com/owner/repo" # Git URL of the repository to analyze
 | `API_KEY` | Your **Groq** API key. Loaded as `GROQ_API_KEY` in `main.py`. |
 | `REP_URL` | The Git URL (HTTPS or SSH) of the target repo to analyze.     |
 
+> Running the **web interface** instead? The server reads the Groq key from the
+> **`GROQ_API_KEY`** environment variable (falling back to `API_KEY` if set), and `REP_URL`
+> is not used — the repository URL is entered in the browser. See
+> [Web interface (chat UI)](#web-interface-chat-ui).
+
 ---
 
 ## Usage
@@ -215,6 +236,81 @@ What happens:
 
 > Because step 3 requires typed input, run DeployGuard in an **interactive terminal**
 > (not a fully non-interactive/CI context).
+
+---
+
+## Web interface (chat UI)
+
+DeployGuard also ships with a **web chat interface** — a single-page React app served by a
+FastAPI backend (`backend/server.py`) that wraps the exact same pipeline. Instead of
+running `main.py` in a terminal, you submit a repository URL in the browser, answer the
+deployment questions as chat messages, and download the generated report.
+
+The backend runs the unmodified pipeline as a subprocess and streams its progress to the
+browser over **Server-Sent Events (SSE)**; the built frontend (`frontend/dist/`) is served
+as static files from the same server, so the whole thing runs as **one service**.
+
+### Build & run
+
+The frontend must be built first, then the server is started **from the project root**:
+
+```bash
+# 1. Build the React frontend (requires Node.js 18+)
+cd frontend
+npm install
+npm run build          # outputs to frontend/dist/
+cd ..
+
+# 2. Start the web server from the project root
+export GROQ_API_KEY="your_groq_api_key_here"
+uvicorn backend.server:app --host 0.0.0.0 --port 8000
+```
+
+Then open <http://localhost:8000> in your browser. The UI and the API are served from the
+same origin (API routes live under `/api/`).
+
+> The server reads the Groq key from **`GROQ_API_KEY`** (it forwards it to the pipeline as
+> `API_KEY`). Run `uvicorn` from the **project root** — `backend/server.py` resolves
+> `main.py`, `build/`, and `reliability_report.md` relative to it.
+
+### Using the chat
+
+1. **Paste a GitHub repository URL** into the input bar and press **Analyse**.
+2. Progress streams back as **status updates** (ingesting, building the call graph, LLM
+   reasoning, simulating, generating the report).
+3. When the pipeline asks its **deployment questions**, each one appears as a chat message.
+   Type your answer in the same input bar and press **Answer** — one question at a time.
+4. After the last answer the analysis resumes, and the final **reliability report is
+   rendered as formatted Markdown** in the chat.
+5. Click **Download Report (.md)** to save `reliability_report.md`.
+
+### Deployment
+
+The `deployment/` folder packages everything for a single-service deploy:
+
+- **`Dockerfile`** — multi-stage build (builds the frontend, then a Python runtime that
+  installs dependencies and serves the API + static UI). Build with the project root as
+  the context: `docker build -f deployment/Dockerfile -t deployguard .`
+- **`railway.toml`** — Railway config (Docker builder, `GET /api/health` health check).
+- **`DEPLOYMENT.md`** — full local / Docker / Railway instructions.
+
+Build and run the image locally (the build context is the **project root**):
+
+```bash
+# Build (uses deployment/Dockerfile.dockerignore to keep .env, venv, node_modules out)
+docker build -f deployment/Dockerfile -t deployguard .
+
+# Run — pass your Groq key; do NOT bake it into the image
+docker run -p 8000:8000 -e GROQ_API_KEY="your_groq_api_key_here" deployguard
+```
+
+Then verify it is up:
+
+```bash
+curl http://localhost:8000/api/health     # → {"status":"ok"}
+```
+
+See [`deployment/DEPLOYMENT.md`](deployment/DEPLOYMENT.md) for the complete guide.
 
 ---
 
