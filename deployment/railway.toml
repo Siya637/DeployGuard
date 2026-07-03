@@ -1,0 +1,13 @@
+# NOTE: Railway looks for railway.toml at the REPO ROOT by default. Since this
+# file lives in deployment/, point Railway's "Config-as-code" path at
+# deployment/railway.toml in the service settings (or copy this file to the
+# repo root). Paths below are relative to the repo root regardless.
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "deployment/Dockerfile"
+
+[deploy]
+startCommand = "uvicorn backend.server:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/api/health"
+restartPolicyType = "on_failure"

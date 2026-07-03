@@ -1,0 +1,11 @@
+venv/
+build/
+*_clone/
+repo_clone/
+__pycache__/
+*.pyc
+.env
+reliability_report.md
+frontend/node_modules/
+frontend/dist/
+.git/
